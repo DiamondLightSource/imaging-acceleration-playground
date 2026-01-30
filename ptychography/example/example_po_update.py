@@ -14,8 +14,8 @@ def plot(o, p, e, on, pn, title=""):
     plt.show()
 
 # Load example data
-fname = "/dls/science/groups/imaging/ptypy_tutorials/data.h5"
-fname = "/dls/science/groups/imaging/ptypy_tutorials/data_modes.h5"
+#fname = "/dls/science/groups/imaging/ptypy_tutorials/ptycho_update_example/data.h5"
+fname = "/dls/science/groups/imaging/ptypy_tutorials/ptycho_update_example/data_modes.h5"
 with h5py.File(fname, "r") as f:
     ob = f["ob"][:]
     pr = f["pr"][:]
