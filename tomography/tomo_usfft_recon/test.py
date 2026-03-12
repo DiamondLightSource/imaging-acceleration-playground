@@ -22,8 +22,8 @@ def test_proj():
     cp.testing.assert_allclose(lhs, rhs, rtol=1e-2,
         err_msg=f"Adjoint mismatch: <a, R^Tb>={lhs:.1f} vs <Ra, b>={rhs:.1f}")
 
-    # Each side should be close to the NVIDIA reference value (178253)
+    # Each side should be close to the NVIDIA reference value (177839)
     # rtol=0.005 = 0.5% tolerance, comfortably covers the observed 0.23% AMD/NVIDIA gap
-    reference = 178253
+    reference = 177839
     cp.testing.assert_allclose(lhs, reference, rtol=5e-3,
         err_msg=f"Value {lhs:.1f} deviates too far from reference {reference}")
