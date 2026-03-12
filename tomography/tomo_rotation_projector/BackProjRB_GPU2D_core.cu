@@ -24,6 +24,36 @@ inline void __checkCudaErrors(cudaError err, const char *file, const int line)
 #define idivup(a, b) ( ((a)%(b) != 0) ? (a)/(b)+1 : (a)/(b) )
 struct square { __host__ __device__ float operator()(float x) { return x * x; } };
 
+__device__ int wrapIndex(int index, int size)
+{
+    int wrapped = index % size;
+    return (wrapped < 0) ? wrapped + size : wrapped;
+}
+
+__device__ float bilinearSampleWrap(const float *img, float x, float y, int dimDetect)
+{
+    const int x0 = (int)floorf(x);
+    const int y0 = (int)floorf(y);
+    const int x1 = x0 + 1;
+    const int y1 = y0 + 1;
+    const float tx = x - (float)x0;
+    const float ty = y - (float)y0;
+
+    const int x0Wrapped = wrapIndex(x0, dimDetect);
+    const int x1Wrapped = wrapIndex(x1, dimDetect);
+    const int y0Wrapped = wrapIndex(y0, dimDetect);
+    const int y1Wrapped = wrapIndex(y1, dimDetect);
+
+    const float topLeft = img[y0Wrapped * dimDetect + x0Wrapped];
+    const float topRight = img[y0Wrapped * dimDetect + x1Wrapped];
+    const float bottomLeft = img[y1Wrapped * dimDetect + x0Wrapped];
+    const float bottomRight = img[y1Wrapped * dimDetect + x1Wrapped];
+
+    const float top = topLeft + tx * (topRight - topLeft);
+    const float bottom = bottomLeft + tx * (bottomRight - bottomLeft);
+    return top + ty * (bottom - top);
+}
+
 /************************************************/
 __global__ void extractProj_kernel(float *sino, float *img, int yIndex, int dimDetect, int dimAngles)
 { 
@@ -41,7 +71,7 @@ __global__ void extractProj_kernel(float *sino, float *img, int yIndex, int dimD
     }    
 }
 
-__global__ void rotateIm_kernel(float *img_out, cudaTextureObject_t texObj, float theta, int dimDetect)
+__global__ void rotateIm_kernel(float *img_out, float* img_in, float theta, int dimDetect)
 { 
 
 	// Calculate normalized texture coordinates 
@@ -55,11 +85,10 @@ __global__ void rotateIm_kernel(float *img_out, cudaTextureObject_t texObj, floa
     float tu = u*cosf(theta) - v*sinf(theta); 
     float tv = v*cosf(theta) + u*sinf(theta); 
 
-    tu /= (float)dimDetect; 
-    tv /= (float)dimDetect; 
+    float sampleX = u*cosf(theta) - v*sinf(theta) + (float)dimDetect/2 - 0.5f;
+    float sampleY = v*cosf(theta) + u*sinf(theta) + (float)dimDetect/2 - 0.5f;
 
-    // read from texture and write to global memory
-    img_out[y * dimDetect + x] += tex2D<float>(texObj, tu+0.5f, tv+0.5f);
+    img_out[y * dimDetect + x] += bilinearSampleWrap(img_in, sampleX, sampleY, dimDetect);
 	}
 }
 
@@ -83,35 +112,6 @@ extern "C" void BackProjGPU(float *sino_in, float *image_out, float *proj_angles
    
 		dim3 dimBlock(BLKXSIZE2D,BLKYSIZE2D);
 		dim3 dimGrid(idivup(dimDetect,BLKXSIZE2D), idivup(dimDetect,BLKYSIZE2D));
-
-        	// Allocate CUDA array in device memory
-		cudaChannelFormatDesc channelDesc =cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
-		cudaArray* cuArray;
-		cudaMallocArray(&cuArray, &channelDesc, dimDetect, dimDetect);
-		// Copy to device memory some data located at address h_data
-		// in host memory
-		//cudaMemcpyToArray(cuArray, 0, 0, image_out, dimDetect*dimDetect*sizeof(float), cudaMemcpyHostToDevice);
-		
-		cudaMemcpy2DToArray(cuArray, 0, 0,  image_out, sizeof(image_out) * dimDetect*dimDetect, 1, 1, cudaMemcpyHostToDevice);
-	
-		// Specify texture
-		struct cudaResourceDesc resDesc;
-		memset(&resDesc, 0, sizeof(resDesc));
-		resDesc.resType = cudaResourceTypeArray;
-		resDesc.res.array.array = cuArray;
-
-		// Specify texture object parameters
-		struct cudaTextureDesc texDesc;
-		memset(&texDesc, 0, sizeof(texDesc));
-		texDesc.addressMode[0] = cudaAddressModeWrap;
-		texDesc.addressMode[1] = cudaAddressModeWrap;
-		texDesc.filterMode = cudaFilterModeLinear;
-		texDesc.readMode = cudaReadModeElementType;
-		texDesc.normalizedCoords = 1;
-
-		// Create texture object
-		cudaTextureObject_t texObj = 0;
-		cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL);
 		
 		/*allocate space for images on device*/
 		checkCudaErrors( cudaMalloc((void**)&sino_in_d,SinoSize*sizeof(float)) );
@@ -129,21 +129,12 @@ extern "C" void BackProjGPU(float *sino_in, float *image_out, float *proj_angles
         checkCudaErrors( cudaDeviceSynchronize() );
         checkCudaErrors(cudaPeekAtLastError() );
         
-        // Bind the array to the texture
-        cudaMemcpyToArray(cuArray, 0, 0, image_rot_d, dimDetect*dimDetect*sizeof(float),cudaMemcpyDeviceToDevice);        
-        //cudaMemcpy2DToArray(cuArray, 0, 0,  image_rot_d, sizeof(image_rot_d) * dimDetect*dimDetect, 1 , 1, cudaMemcpyDeviceToDevice);
-        
         /* rotate image and accumulate the result */
-        rotateIm_kernel<<<dimGrid,dimBlock>>>(image_out_d, texObj, proj_angles[k], dimDetect);
+        rotateIm_kernel<<<dimGrid,dimBlock>>>(image_out_d, image_rot_d, proj_angles[k], dimDetect);
         checkCudaErrors(cudaDeviceSynchronize());
         checkCudaErrors(cudaPeekAtLastError() );   
 		}
         /***************************************************************/    
-        
-        // Destroy texture object
-	cudaDestroyTextureObject(texObj);
-	// Free device memory
-	cudaFreeArray(cuArray);    
         
         // Copy the result from device to host memory
         cudaMemcpy(image_out,image_out_d,ImSize*sizeof(float),cudaMemcpyDeviceToHost);
