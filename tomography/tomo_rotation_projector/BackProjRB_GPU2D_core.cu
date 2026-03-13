@@ -73,10 +73,13 @@ __global__ void extractProj_kernel(float *sino, float *img, int yIndex, int dimD
 
 __global__ void rotateIm_kernel(float *img_out, float* img_in, float theta, int dimDetect)
 { 
-
 	// Calculate normalized texture coordinates 
     unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
+    unsigned int sharedMemoryPosition = blockDim.y * threadIdx.y + threadIdx.x;
+
+    __shared__ float arr[BLKXSIZE2D * BLKYSIZE2D * sizeof(float)];
+    arr[sharedMemoryPosition] = img_in[y * dimDetect + x];
 	
 	if ((x < dimDetect) && (y < dimDetect)) {
 
@@ -88,7 +91,8 @@ __global__ void rotateIm_kernel(float *img_out, float* img_in, float theta, int 
     float sampleX = u*cosf(theta) - v*sinf(theta) + (float)dimDetect/2 - 0.5f;
     float sampleY = v*cosf(theta) + u*sinf(theta) + (float)dimDetect/2 - 0.5f;
 
-    img_out[y * dimDetect + x] += bilinearSampleWrap(img_in, sampleX, sampleY, dimDetect);
+    __syncthreads();
+    img_out[y * dimDetect + x] += bilinearSampleWrap(arr, sampleX, sampleY, dimDetect);
 	}
 }
 
